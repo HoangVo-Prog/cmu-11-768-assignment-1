@@ -13,6 +13,8 @@ from modal.config import Config
 from assignment.task import Task
 from assignment.utils.image import SourceMismatch, verify_source
 
+from ipaddress import ip_address
+
 
 TASKS = ("tasks/chess-terminal-move",)
 PLACEHOLDERS = ("replace-", "course-key", "<", ">")
@@ -64,13 +66,26 @@ def main() -> int:
         failures.append("OPENAI_MODEL is missing")
     if base_url:
         parsed = urlparse(base_url)
-        if parsed.scheme != "https" or not parsed.netloc:
-            failures.append("OPENAI_BASE_URL must be a complete HTTPS URL")
+        host = parsed.hostname
+
+        local_http = False
+        if parsed.scheme == "http" and host:
+            if host == "localhost":
+                local_http = True
+            else:
+                try:
+                    address = ip_address(host)
+                    local_http = address.is_loopback or address.is_private
+                except ValueError:
+                    pass
+
+        if not parsed.netloc or (parsed.scheme != "https" and not local_http):
+            failures.append(
+                "OPENAI_BASE_URL must use HTTPS, except for local/private HTTP endpoints"
+            )
         else:
             print(f"[ok] inference endpoint: {parsed.netloc}")
-    else:
-        failures.append("OPENAI_BASE_URL is missing")
-
+            
     if not args.offline and api_key and base_url:
         models_url = base_url.rstrip("/") + "/models"
         try:
