@@ -1,0 +1,32 @@
+diff --git a/src/chess_app/game.py b/src/chess_app/game.py
+index f153e00..587cf75 100755
+--- a/src/chess_app/game.py
++++ b/src/chess_app/game.py
+@@ -74,15 +74,24 @@ class ChessGame:
+             self._record_and_push(move)
+             human_state = self._state_unlocked()
+ 
+-            engine_move: str | None = None
++            # A legal human move can end the game immediately (for example by
++            # checkmate).  Do not ask the engine to move from a terminal board:
++            # there is no reply to make, and _choose_engine_move deliberately
++            # rejects that position.
++            if human_state["game_over"]:
++                state = self._state_unlocked()
++                state["human_move"] = move.uci()
++                state["human_state"] = human_state
++                state["engine_move"] = None
++                return state
++
+             reply = self._choose_engine_move()
+-            engine_move = reply.uci()
+             self._record_and_push(reply)
+ 
+             state = self._state_unlocked()
+             state["human_move"] = move.uci()
+             state["human_state"] = human_state
+-            state["engine_move"] = engine_move
++            state["engine_move"] = reply.uci()
+             return state
+ 
+     def _parse_move(self, move_text: str) -> chess.Move:

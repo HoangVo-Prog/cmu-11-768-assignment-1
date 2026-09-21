@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
+import yaml
 from openai import OpenAI
 
 from assignment.env import Environment
@@ -150,22 +151,69 @@ class Agent:
         if self.skills:
             self.tools.append(INVOKE_SKILL_TOOL)
 
-        # TODO(1.1.a): Add machinery to maintain agent state as it takes actions
-        # and observes the results.
+        self.history = []
 
     def load_skills(self, skills_path: Path) -> dict[str, dict[str, str]]:
         """Load the skill folders exposed to this agent."""
+        
+        if not skills_path.is_dir():
+            raise ValueError(f"Skills path {skills_path} is not a directory.")
+        
+        skills = {}
+        names = set()
+        
+        for child in skills_path.iterdir():
+            if not child.is_dir():
+                continue
+            
+            skill_file = child / "SKILL.md"
+            if not skill_file.exists():
+                continue
+            
+            content = skill_file.read_text(encoding="utf-8")
+            parts = content.split("---", 2)
+            frontmatter = parts[1] if len(parts) > 2 else ""
+            
+            if not frontmatter:
+                raise ValueError(f"Missing or malformed frontmatter in {skill_file}") 
+            
+            try:
+                metadata = yaml.safe_load(frontmatter)
+            except yaml.YAMLError as exc:
+                raise ValueError(
+                    f"Missing or malformed frontmatter in {skill_file}"
+                ) from exc
 
-        # TODO(1.4): Validate ``skills_path``, discover one ``SKILL.md``
-        # per child directory, parse its YAML frontmatter (what's between the
-        # `---` tags at the head of the file), and return a mapping
-        # keyed by the frontmatter ``name``. Each value must contain a concise
-        # ``metadata`` string for the model's skill catalog and the complete
-        # ``content`` of the skill file for ``invoke_skill``. Reject duplicate
-        # names and malformed or missing frontmatter with a clear
-        # ``ValueError``.
-        raise NotImplementedError
+            if not isinstance(metadata, dict):
+                raise ValueError(
+                    f"Missing or malformed frontmatter in {skill_file}"
+                )
 
+            name = metadata.get("name")
+            if not isinstance(name, str) or not name.strip():
+                raise ValueError(
+                    f"Missing or malformed frontmatter in {skill_file}"
+                )
+            
+            if not name:
+                raise ValueError(f"Missing or malformed frontmatter in {skill_file}")
+            if name in names:
+                raise ValueError(f"Duplicate skill name: {name}")
+            
+            names.add(name)
+
+            metadata = (
+                f"name: {name}\n"
+                f"description: {yaml.safe_load(frontmatter).get('description', '').strip() if frontmatter else ''}\n"
+            )
+            
+            skills[name] = {
+                "metadata": metadata,
+                "content": content
+            }
+
+        return skills
+        
     def query_language_model(self) -> dict[str, Any]:
         """Send one tool-enabled Chat Completions request and normalize it."""
 
@@ -218,17 +266,18 @@ class Agent:
         return response.choices[0].message.model_dump(exclude_none=True)
 
     def build_prompt(self) -> list[dict[str, Any]]:
-        # TODO(1.1.a): Construct a sequence of messages that form the language
-        # model prompt. This should include standing instructions, task
-        # specification, prior interaction including observations, reasoning,
-        # and actions from previous turns. Note that this method should be
-        # domain-agnostic and construct the prompt in a way that would apply
-        # to any of the inheriting domain-specific agents.
-
-        # You want to be careful about which attributes of the class you modify
-        # here as they may also be handled by the subclasses.
-        raise NotImplementedError
-
+        return [
+            {
+                "role": "system",
+                "content": self.system_prompt,
+            },
+            {
+                "role": "user",
+                "content": self.task_prompt,
+            },
+            *self.history,
+        ]
+        
     def estimate_active_prompt_tokens(self) -> int:
         """Estimate the next prompt, calibrated by the provider's latest usage."""
 
@@ -323,20 +372,35 @@ class Agent:
         """Run ReAct steps, always saving the trajectory and stopping Modal."""
 
         try:
-            # TODO(1.2) Run the ReAct loop. Orchestrate the sequence of
-            # prompting the language model to produce reasoning and actions,
-            # extracting the tool calls produced by the model, and executing
-            # the tool calls to obtain the agent's observation for the next
-            # step. Ensure you identify when the agent has completed the task
-            # by setting `Agent.finished`. If the agent exceeds the
-            # `step_limit`, raise `StepLimitError`.
+            while not self.finished:
+                if self.steps_taken >= self.step_limit:
+                    raise StepLimitError(
+                        f"Agent exceeded step limit of {self.step_limit}. "
+                        "Increase the limit or improve the agent's reasoning " 
+                        "to complete the task in fewer steps."
+                    )
+                
+                response = self.query_language_model()
+                self.history.append(response)
+                
+                tool_calls = response.get("tool_calls", [])
+                if tool_calls:
+                    self.history.extend(self.execute_tool_calls(tool_calls))
+                else:
+                    self.history.append({
+                        "role": "user",
+                        "content": (
+                            "Your previous response did not contain a tool call. "
+                            "Continue the task by using one of the available tools."
+                        ),
+                    })
 
             # TODO(2.2) Call `maybe_compact_context()` before each new action
             # request in your shared loop. It already estimates active tokens
             # and handles the threshold, and tracks compaction events for
             # logging.
 
-            raise NotImplementedError
+            # raise NotImplementedError
         finally:
             # This block is provided infrastructure. Do not modify it: a
             # trajectory is required even when a run fails.
